@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#28634f">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="过词">
+  <link rel="apple-touch-icon" href="icon-192.png">
+  <title>过词 · 把记得与忘记分开</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icon-192.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="mobile.css">
+</head>
+<body>
+  <header class="header"><a class="brand" href="#" id="home"><span class="logo">过</span><span>过词<small>只检查记忆</small></span></a><nav><button id="importOpen">＋ 导入单词</button><button id="backup" class="quiet">备份全部</button><label class="button quiet">恢复备份<input id="restore" type="file" accept=".json" hidden></label></nav></header>
+  <div id="storageWarning" class="warning" role="alert" hidden></div>
+  <div id="mobileBar" class="mobile-bar"><span id="offlineStatus" role="status">正在准备离线使用…</span><button id="installApp" class="quiet small">安装到手机</button></div>
+  <main>
+    <section id="library">
+      <div class="intro"><p class="eyebrow">A QUICK MEMORY CHECK</p><h1>背过的词，<br>再过一遍。</h1><p>记得就继续，忘记就留下。<br>把需要再看的单词，收进另一本。</p></div>
+      <div class="setup card"><h2>开始过词</h2><label>要过的单词本<select id="source"></select></label><label>遗忘词收进<select id="target"></select></label><button id="newTarget" class="text-button">＋ 新建接收单词本</button><label class="check"><input type="checkbox" id="shuffle">打乱顺序</label><p class="help" id="setupInfo"></p><button id="start" class="primary wide">开始过词 →</button><button id="resume" class="wide" hidden>继续上次进度</button></div>
+      <section class="books-section"><div class="section-title"><h2>我的单词本 <span id="bookCount"></span></h2><span class="help">每一本都可以导出、再次过词</span></div><div id="books" class="books"></div></section>
+    </section>
+    <section id="review" hidden>
+      <div class="review-toolbar"><button id="leave" class="quiet">← 单词本</button><span id="sessionName"></span><span id="progressText"></span></div>
+      <div class="progress"><div id="progressFill"></div></div>
+      <button id="previous" class="previous" hidden title="点击将上一词加入接收单词本"><span class="previous-label">上一词 · 核对一下</span><span id="previousWord" class="previous-word"></span><span id="previousMeaning"></span><span id="previousAction" class="previous-action"></span></button>
+      <div id="currentCard" class="word-card card"><div class="word-top"><span id="wordNumber" class="eyebrow"></span><button id="editWord" class="quiet small">补充 / 修改释义</button></div><h1 id="word"></h1><p id="phonetic" class="phonetic"></p><p id="prompt" class="prompt">还记得它的意思吗？</p><div id="answer" hidden><p class="eyebrow">词性与中文释义</p><div id="meaning" class="meaning"></div><p id="added" class="added"></p></div><div id="answerButtons" class="answer-buttons"><button id="forgot" class="forgot">不记得 <kbd>2</kbd></button><button id="remember" class="primary">记得 <kbd>1</kbd></button></div><button id="next" class="primary wide" hidden>下一个 → <kbd>1 / Enter</kbd></button></div>
+      <div id="finished" class="card finished" hidden><div class="done-icon">✓</div><h1>这一遍，过完了。</h1><p id="summary"></p><p id="finishTarget"></p><div class="finish-actions"><button id="exportTarget" class="primary">导出遗忘词 CSV</button><button id="again">再过一遍</button><button id="finishHome" class="quiet">回到单词本</button></div></div>
+      <div class="review-foot"><span id="targetNote"></span><span>1 记得 / 下一词 · 2 不记得</span></div>
+    </section>
+  </main>
+  <footer>本地保存 · 无需账号 · 无学习计划 <span>基于 <a href="https://github.com/Losecloud/Word-Memo" target="_blank" rel="noreferrer">词忆 Word Memo</a> 的解析模块制作</span></footer>
+  <dialog id="importDialog"><form id="importForm"><div class="dialog-head"><h2>导入单词</h2><button type="button" data-close="importDialog" class="quiet">关闭</button></div><label>导入到<select id="importBook"><option value="">新建单词本</option></select></label><label id="nameLabel">新单词本名称<input id="bookName" placeholder="例如：考研词书 · 已背 1—10 单元" maxlength="80"></label><label class="file-zone">选择 TXT / CSV / TSV / JSON 文件<input id="importFile" type="file" accept=".txt,.csv,.tsv,.json"></label><p class="help">或直接粘贴：一行一个英文单词；也可用 Tab 分隔「单词、词性、中文释义」。只给英文时会查询内置英汉词典，未命中的词可手动补充。</p><textarea id="importText" rows="7" placeholder="abandon&#9;v.&#9;放弃；抛弃&#10;brief&#9;adj.&#9;简短的&#10;resilient"></textarea><p id="importStatus" class="help" role="status"></p><button type="submit" id="importSubmit" class="primary wide">导入并保存</button></form></dialog>
+  <dialog id="nameDialog"><form id="nameForm"><div class="dialog-head"><h2>新建接收单词本</h2><button type="button" data-close="nameDialog" class="quiet">关闭</button></div><label>单词本名称<input id="targetName" required maxlength="80" value="这次忘记的词"></label><button type="submit" class="primary wide">创建并选中</button></form></dialog>
+  <dialog id="editDialog"><form id="editForm"><div class="dialog-head"><h2 id="editTitle">修改释义</h2><button type="button" data-close="editDialog" class="quiet">关闭</button></div><label>音标<input id="editPhonetic"></label><label>词性<input id="editPos" placeholder="例如：v. / adj."></label><label>中文释义<textarea id="editMeaning" rows="5" required></textarea></label><p class="help">将同步此单词在各单词本中的释义，不改变过词进度。</p><button type="submit" class="primary wide">保存释义</button></form></dialog>
+  <dialog id="bookDialog"><div class="dialog-head"><h2 id="viewTitle"></h2><button data-close="bookDialog" class="quiet">关闭</button></div><input id="wordSearch" placeholder="搜索英文或中文" aria-label="搜索单词"><div id="wordList" class="word-list"></div></dialog>
+  <div id="toast" role="status" hidden></div>
+  <dialog id="installDialog"><div class="dialog-head"><h2>把过词放到主屏幕</h2><button id="closeInstall" class="quiet">关闭</button></div><p>安卓：用 Chrome 或 Edge 打开，选择菜单里的「安装应用」或「添加到主屏幕」。</p><p>iPhone：用 Safari 打开，选择「分享」→「添加到主屏幕」，如有「作为网页 App 打开」选项，请启用。</p><p class="help">需要 HTTPS 网页地址。首次打开请等到「离线已就绪」再断网；单词本保存在当前设备，请定期备份。电脑本地地址 127.0.0.1 不能在手机上直接访问。</p></dialog>
+  <script src="word-parser.js"></script>
+  <script src="dictionary.js"></script>
+  <script src="app.js"></script>
+  <script src="pwa.js"></script>
+</body>
+</html>

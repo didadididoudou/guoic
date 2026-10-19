@@ -1,0 +1,13 @@
+.mobile-bar{max-width:1100px;margin:0 auto;padding:0 40px;display:flex;justify-content:space-between;align-items:center;gap:12px;font-size:12px;color:var(--muted)}
+body{padding-left:env(safe-area-inset-left);padding-right:env(safe-area-inset-right);padding-bottom:env(safe-area-inset-bottom)}
+#installDialog p{font-size:14px;line-height:1.9}
+@media(max-width:760px){
+  .mobile-bar{padding:0 20px;font-size:11px}
+  .mobile-bar button{white-space:nowrap;min-height:44px}
+  input:not([type=file]):not([type=checkbox]),select,textarea{font-size:16px}
+  .book-actions button{min-height:44px}
+  .header{flex-wrap:wrap;gap:12px}
+  .brand{flex-shrink:0}
+  .header nav{width:100%;max-width:none;justify-content:flex-start}
+  .header nav button,.header nav .button{min-height:44px;margin:0}
+}

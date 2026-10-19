@@ -1,0 +1,17 @@
+{
+  "name": "过词 · 只检查记忆",
+  "short_name": "过词",
+  "description": "把背过的单词快速过一遍，把忘记的词收进下一本。",
+  "lang": "zh-CN",
+  "id": "./",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#f5f4ef",
+  "theme_color": "#28634f",
+  "icons": [
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ]
+}
