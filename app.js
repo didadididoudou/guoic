@@ -102,7 +102,14 @@
       const info = document.createElement('p'); const missing = b.words.filter(w => !hasMeaning(w)).length;
       info.textContent = `${b.words.length} 个单词${missing ? ' · ' + missing + ' 个缺释义' : ''}`;
       const actions = document.createElement('div'); actions.className = 'book-actions';
-      actions.append(button('选中过词', () => { setSource(b.id); $('start').focus(); }), button('查看', () => view(b.id)), button('导出 CSV', () => exportCSV(b.id)), button('导出 JSON', () => download(b.name + '.json', JSON.stringify({ version: 1, name: b.name, words: b.words }, null, 2), 'application/json')));
+      const remove = button('删除', () => deleteBook(b.id)); remove.className = 'danger';
+      actions.append(
+        button('选中过词', () => { setSource(b.id); $('start').focus(); }),
+        button('查看', () => view(b.id)),
+        button('导出 CSV', () => exportCSV(b.id)),
+        button('导出 JSON', () => download(b.name + '.json', JSON.stringify({ version: 1, name: b.name, words: b.words }, null, 2), 'application/json')),
+        remove
+      );
       item.append(icon, title, info, actions); $('books').append(item);
     });
   }
@@ -112,6 +119,23 @@
       data.sourceId = sourceId;
       if (data.targetId === sourceId) data.targetId = data.books.find(b => b.id !== sourceId)?.id || '';
     }); renderSetup();
+  }
+  function deleteBook(bookId) {
+    const target = book(bookId);
+    if (!target) throw new Error('单词本不存在。');
+    if (state.books.length <= 1) throw new Error('至少保留一个单词本，不能删除最后一本。');
+    const hasSession = state.session && (state.session.sourceId === bookId || state.session.targetId === bookId);
+    const note = hasSession ? '这会同时清除当前未完成的过词进度。' : '删除后无法从本机恢复，建议先导出备份。';
+    if (!confirm(`确定删除「${target.name}」吗？\n${note}`)) return;
+    commit(data => {
+      data.books = data.books.filter(b => b.id !== bookId);
+      const first = data.books[0];
+      if (!data.books.some(b => b.id === data.sourceId)) data.sourceId = first?.id || '';
+      if (!data.books.some(b => b.id === data.targetId) || data.targetId === data.sourceId) data.targetId = data.books.find(b => b.id !== data.sourceId)?.id || '';
+      if (data.session && (data.session.sourceId === bookId || data.session.targetId === bookId)) data.session = null;
+    });
+    library();
+    toast(`已删除「${target.name}」。`);
   }
   function start() {
     const source = book(state.sourceId);
@@ -231,11 +255,42 @@
     });
   }
   function view(bookId) { viewingBook = bookId; $('viewTitle').textContent = book(bookId).name; $('wordSearch').value = ''; renderWordList(); $('bookDialog').showModal(); }
+  function deleteWord(bookId, wordText) {
+    const target = book(bookId);
+    const wordKey = key(wordText);
+    const removed = target?.words.find(w => key(w.word) === wordKey);
+    if (!target || !removed) throw new Error('单词不存在。');
+    const session = state.session;
+    const affectsQueue = session?.sourceId === bookId && session.queue.some(w => key(w.word) === wordKey);
+    const note = affectsQueue ? '这个单词也会从当前未完成的过词进度中移除。' : '删除后无法从本机恢复，建议先导出备份。';
+    if (!confirm(`确定从「${target.name}」删除「${removed.word}」吗？\n${note}`)) return;
+    commit(data => {
+      const currentBook = book(bookId, data);
+      currentBook.words = currentBook.words.filter(w => key(w.word) !== wordKey);
+      const currentSession = data.session;
+      if (!currentSession) return;
+      if (currentSession.sourceId === bookId) {
+        const removedBefore = currentSession.queue.slice(0, currentSession.index).filter(w => key(w.word) === wordKey).length;
+        currentSession.queue = currentSession.queue.filter(w => key(w.word) !== wordKey);
+        currentSession.index = Math.max(0, Math.min(currentSession.index - removedBefore, currentSession.queue.length));
+      }
+      if (currentSession.last && key(currentSession.last.word.word) === wordKey) currentSession.last = null;
+      if (Array.isArray(currentSession.corrected)) currentSession.corrected = currentSession.corrected.filter(k => k !== wordKey);
+    });
+    renderWordList(); renderSetup(); renderBooks();
+    toast(`已从「${target.name}」删除「${removed.word}」。`);
+  }
   function renderWordList() {
     const words = book(viewingBook)?.words || [], search = key($('wordSearch').value);
     $('wordList').replaceChildren();
     const filtered = words.filter(w => key(w.word + ' ' + definitions(w)).includes(search));
-    filtered.slice(0, 300).forEach(w => { const row = document.createElement('div'); row.className = 'word-row'; const term = document.createElement('strong'); term.textContent = w.word; const meaning = document.createElement('span'); meaning.textContent = definitions(w) || '暂无释义'; row.append(term, meaning); $('wordList').append(row); });
+    filtered.slice(0, 300).forEach(w => {
+      const row = document.createElement('div'); row.className = 'word-row';
+      const term = document.createElement('strong'); term.textContent = w.word;
+      const meaning = document.createElement('span'); meaning.textContent = definitions(w) || '暂无释义';
+      const remove = button('删除', () => deleteWord(viewingBook, w.word)); remove.className = 'danger small';
+      row.append(term, meaning, remove); $('wordList').append(row);
+    });
     if (!filtered.length) $('wordList').textContent = search ? '没有匹配的单词。' : '还没有单词。';
     if (filtered.length > 300) { const hint = document.createElement('p'); hint.className = 'help'; hint.textContent = `共 ${filtered.length} 个匹配，仅显示前 300 个。可搜索缩小范围，导出包含全部单词。`; $('wordList').append(hint); }
   }

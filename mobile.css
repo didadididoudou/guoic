@@ -1,4 +1,6 @@
 .mobile-bar{max-width:1100px;margin:0 auto;padding:0 40px;display:flex;justify-content:space-between;align-items:center;gap:12px;font-size:12px;color:var(--muted)}
+.book-actions .danger{color:#9b625a;border-color:#ead7d2;background:#fffaf8}.book-actions .danger:hover{background:#f7e9e5}
+.word-row{grid-template-columns:minmax(90px,1fr) minmax(0,2fr) auto;align-items:start}.word-row .danger{color:#9b625a;border-color:#ead7d2;background:#fffaf8}.word-row .danger:hover{background:#f7e9e5}
 body{padding-left:env(safe-area-inset-left);padding-right:env(safe-area-inset-right);padding-bottom:env(safe-area-inset-bottom)}
 #installDialog p{font-size:14px;line-height:1.9}
 @media(max-width:760px){
