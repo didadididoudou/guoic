@@ -7,6 +7,7 @@
   const id = () => 'b_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 9);
   const clone = value => JSON.parse(JSON.stringify(value));
   const dictionary = window.GUOCI_DICTIONARY || {};
+  const dictionaryRevisions = window.GUOCI_DICTIONARY_REVISIONS || {};
   const own = (object, property) => Object.prototype.hasOwnProperty.call(object, property);
   let persisted, state, viewingBook, editingWord, busy = false, toastTimer;
 
@@ -17,7 +18,7 @@
   function normalize(raw) {
     const text = WordParser.cleanWord(String(typeof raw === 'string' ? raw : raw.word || ''));
     if (!WordParser.isValidEnglishWord(text)) return null;
-    const result = { word: text, phonetic: String(raw.phonetic || ''), definitions: [] };
+    const result = { word: text, phonetic: String(raw.phonetic || ''), definitions: [], meaningSource: raw.meaningSource === 'manual' ? 'manual' : 'provided' };
     if (Array.isArray(raw.definitions)) result.definitions = raw.definitions.map(d => ({ pos: String(d.pos || ''), meaning: String(d.meaning || ''), example: String(d.example || '') }));
     else result.definitions = [{ pos: String(raw.pos || ''), meaning: String(raw.meaning || raw.translation || ''), example: '' }];
     if (!hasMeaning(result)) {
@@ -25,6 +26,7 @@
       if (Array.isArray(entry)) {
         result.phonetic ||= entry[0] || '';
         result.definitions = [{ pos: '', meaning: String(entry[1] || ''), example: '' }];
+        result.meaningSource = 'dictionary';
       }
     }
     return result;
@@ -132,6 +134,31 @@
     if (state.session) $('resume').textContent = `继续「${book(state.session.sourceId)?.name || '上次过词'}」 · ${state.session.index} / ${state.session.queue.length}`;
   }
   function button(label, handler) { const el = document.createElement('button'); el.textContent = label; el.addEventListener('click', guard(handler)); return el; }
+  function oldDictionaryMeaning(word) {
+    const wordKey = key(word.word);
+    const revision = own(dictionaryRevisions, wordKey) ? dictionaryRevisions[wordKey] : null;
+    return word.meaningSource !== 'manual' && revision && word.definitions?.length === 1 && !word.definitions[0].pos && word.definitions[0].meaning === revision.before ? revision : null;
+  }
+  function updateDictionaryMeanings(bookId) {
+    const target = book(bookId);
+    const keys = new Set(target.words.filter(oldDictionaryMeaning).map(w => key(w.word)));
+    if (!keys.size) return;
+    if (!confirm(`更新「${target.name}」中 ${keys.size} 个词的旧词库释义？\n只替换与旧词库文本完全相同的释义，并同步其他单词本和当前队列；你重新填写的不同内容会保留。建议先备份全部。`)) return;
+    commit(data => {
+      const update = w => {
+        const revision = keys.has(key(w.word)) && oldDictionaryMeaning(w);
+        if (revision) {
+          w.previousDictionaryMeaning = revision.before;
+          w.definitions = [{pos: '', meaning: revision.after, example: ''}];
+          w.meaningSource = 'dictionary';
+        }
+      };
+      data.books.forEach(b => b.words.forEach(update));
+      if (data.session) { data.session.queue.forEach(update); if (data.session.last) update(data.session.last.word); }
+    });
+    renderBooks(); renderSetup();
+    toast(`已更新 ${keys.size} 个词的旧词库释义，过词进度保留。`);
+  }
   function renderBooks() {
     $('bookCount').textContent = state.books.length;
     $('books').replaceChildren();
@@ -151,6 +178,8 @@
         remove
       );
       if (missing) actions.append(button(`补全释义（${missing}）`, () => view(b.id, true)));
+      const outdated = b.words.filter(oldDictionaryMeaning).length;
+      if (outdated) actions.append(button(`更新词库释义（${outdated}）`, () => updateDictionaryMeanings(b.id)));
       item.append(icon, title, info, actions); $('books').append(item);
     });
   }
@@ -417,7 +446,7 @@
       if (!editingWord) throw new Error('请重新选择要编辑的单词。');
       const meaning = $('editMeaning').value.trim(); if (!meaning) throw new Error('请输入中文释义。');
       commit(data => {
-        const updated = { phonetic: $('editPhonetic').value.trim(), definitions: [{ pos: $('editPos').value.trim(), meaning, example: '' }] };
+        const updated = { phonetic: $('editPhonetic').value.trim(), definitions: [{ pos: $('editPos').value.trim(), meaning, example: '' }], meaningSource: 'manual' };
         const update = w => { if (key(w.word) === editingWord.key) Object.assign(w, clone(updated)); };
         data.books.forEach(b => b.words.forEach(update));
         if (data.session) { data.session.queue.forEach(update); if (data.session.last) update(data.session.last.word); }
