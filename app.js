@@ -8,7 +8,7 @@
   const clone = value => JSON.parse(JSON.stringify(value));
   const dictionary = window.GUOCI_DICTIONARY || {};
   const own = (object, property) => Object.prototype.hasOwnProperty.call(object, property);
-  let persisted, state, viewingBook, busy = false, toastTimer;
+  let persisted, state, viewingBook, editingWord, busy = false, toastTimer;
 
   function definitions(word) {
     return (word.definitions || []).map(d => [d.pos, d.meaning].filter(Boolean).join(' ')).filter(Boolean).join('\n');
@@ -74,6 +74,46 @@
     persisted = json;
   }
   function book(bookId, data = state) { return data.books.find(b => b.id === bookId); }
+  function localDay() {
+    const now = new Date();
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+  }
+  function dailyState(data = state) {
+    const target = Number.isInteger(data.daily?.target) && data.daily.target >= 1 && data.daily.target <= 10000 ? data.daily.target : 100;
+    const words = data.daily?.date === localDay() && Array.isArray(data.daily.words) ? [...new Set(data.daily.words.map(key).filter(Boolean))] : [];
+    return { date: localDay(), target, words };
+  }
+  function countToday(data, word) {
+    data.daily = dailyState(data);
+    const wordKey = key(word.word);
+    if (!data.daily.words.includes(wordKey)) data.daily.words.push(wordKey);
+  }
+  function renderDaily() {
+    const daily = dailyState(), count = daily.words.length;
+    $('dailyCount').textContent = count;
+    $('dailyTarget').textContent = `/ ${daily.target} 词`;
+    $('dailyMessage').textContent = count >= daily.target ? '今日目标已完成 ✓' : `还差 ${daily.target - count} 词`;
+    $('dailyFill').style.width = `${Math.min(100, count / daily.target * 100)}%`;
+    $('dailyProgress').setAttribute('aria-valuemax', daily.target);
+    $('dailyProgress').setAttribute('aria-valuenow', Math.min(count, daily.target));
+    $('dailyProgress').setAttribute('aria-valuetext', `今天已过 ${count} 个不同单词，目标 ${daily.target} 个`);
+  }
+  function refreshDay() {
+    if (state.daily?.date !== localDay() && persisted !== undefined) commit(data => { data.daily = dailyState(data); });
+    renderDaily();
+  }
+  function fillMissingMeanings(data) {
+    const fill = w => {
+      if (hasMeaning(w)) return;
+      const filled = normalize(w);
+      if (filled && hasMeaning(filled)) Object.assign(w, filled);
+    };
+    data.books.forEach(b => b.words.forEach(fill));
+    if (data.session) {
+      data.session.queue.forEach(fill);
+      if (data.session.last) fill(data.session.last.word);
+    }
+  }
   function option(select, value, text) { const el = document.createElement('option'); el.value = value; el.textContent = text; select.append(el); }
   function renderSetup() {
     $('source').replaceChildren(); $('target').replaceChildren();
@@ -86,7 +126,7 @@
     $('shuffle').checked = state.shuffle;
     const source = book(state.sourceId);
     const missing = source ? source.words.filter(w => !hasMeaning(w)).length : 0;
-    $('setupInfo').textContent = missing ? `${missing} 个词缺少释义，可导入带中文的版本或在过词时补充。` : '每个词只过一次，不记得的词自动归集，不会反复插回。';
+    $('setupInfo').textContent = missing ? `${missing} 个词缺少释义，可在单词本「查看」中勾选「只看暂无释义」后逐个编辑。` : '每个词只过一次，不记得的词自动归集，不会反复插回。';
     $('start').disabled = !source?.words.length || !book(state.targetId) || state.sourceId === state.targetId;
     $('resume').hidden = !state.session;
     if (state.session) $('resume').textContent = `继续「${book(state.session.sourceId)?.name || '上次过词'}」 · ${state.session.index} / ${state.session.queue.length}`;
@@ -110,10 +150,11 @@
         button('导出 JSON', () => download(b.name + '.json', JSON.stringify({ version: 1, name: b.name, words: b.words }, null, 2), 'application/json')),
         remove
       );
+      if (missing) actions.append(button(`补全释义（${missing}）`, () => view(b.id, true)));
       item.append(icon, title, info, actions); $('books').append(item);
     });
   }
-  function library() { $('review').hidden = true; $('library').hidden = false; renderSetup(); renderBooks(); window.scrollTo(0, 0); }
+  function library() { $('review').hidden = true; $('library').hidden = false; refreshDay(); renderSetup(); renderBooks(); window.scrollTo(0, 0); }
   function setSource(sourceId) {
     commit(data => {
       data.sourceId = sourceId;
@@ -191,9 +232,9 @@
     commit(data => {
       const session = data.session, word = session.queue[session.index];
       if (session.revealed) { session.last = { word: clone(word), remembered: false }; session.index++; session.revealed = false; }
-      else if (remembered) { session.remembered++; session.last = { word: clone(word), remembered: true }; session.index++; }
-      else { add(data, word); session.forgotten++; session.revealed = true; }
-    }); renderReview();
+      else if (remembered) { countToday(data, word); session.remembered++; session.last = { word: clone(word), remembered: true }; session.index++; }
+      else { countToday(data, word); add(data, word); session.forgotten++; session.revealed = true; }
+    }); renderReview(); renderDaily();
     document.activeElement?.blur();
   }
   function correctPrevious() {
@@ -254,7 +295,17 @@
       return { word: row[0], pos: row.length >= 3 ? row[1] : '', meaning: row.length >= 3 ? row.slice(2).join(separator) : row[1] || '' };
     });
   }
-  function view(bookId) { viewingBook = bookId; $('viewTitle').textContent = book(bookId).name; $('wordSearch').value = ''; renderWordList(); $('bookDialog').showModal(); }
+  function view(bookId, missingOnly = false) { viewingBook = bookId; $('viewTitle').textContent = book(bookId).name; $('wordSearch').value = ''; $('missingOnly').checked = missingOnly; renderWordList(); $('bookDialog').showModal(); }
+  function openEditor(word, origin) {
+    if (!word) throw new Error('单词不存在。');
+    editingWord = { key: key(word.word), origin };
+    $('editTitle').textContent = word.word + ' · 修改释义';
+    $('editPhonetic').value = word.phonetic || '';
+    $('editPos').value = word.definitions?.length === 1 ? word.definitions[0].pos : '';
+    $('editMeaning').value = word.definitions?.length === 1 ? word.definitions[0].meaning : definitions(word);
+    $('editStatus').textContent = '';
+    $('editDialog').showModal();
+  }
   function deleteWord(bookId, wordText) {
     const target = book(bookId);
     const wordKey = key(wordText);
@@ -283,15 +334,22 @@
   function renderWordList() {
     const words = book(viewingBook)?.words || [], search = key($('wordSearch').value);
     $('wordList').replaceChildren();
-    const filtered = words.filter(w => key(w.word + ' ' + definitions(w)).includes(search));
+    const missing = words.filter(w => !hasMeaning(w)).length;
+    const filtered = words.filter(w => (!$('missingOnly').checked || !hasMeaning(w)) && key(w.word + ' ' + definitions(w)).includes(search));
+    $('wordListCount').textContent = `显示 ${filtered.length} / ${words.length} 词 · ${missing} 个缺释义`;
     filtered.slice(0, 300).forEach(w => {
       const row = document.createElement('div'); row.className = 'word-row';
       const term = document.createElement('strong'); term.textContent = w.word;
-      const meaning = document.createElement('span'); meaning.textContent = definitions(w) || '暂无释义';
+      const meaning = document.createElement('span'); meaning.textContent = hasMeaning(w) ? definitions(w) : '暂无释义';
+      if (!hasMeaning(w)) meaning.className = 'missing-meaning';
+      const actions = document.createElement('div'); actions.className = 'word-actions';
+      const edit = button(hasMeaning(w) ? '编辑' : '添加释义', () => openEditor(w, 'library')); edit.className = 'small';
+      edit.setAttribute('aria-label', `编辑 ${w.word} 的释义`);
       const remove = button('删除', () => deleteWord(viewingBook, w.word)); remove.className = 'danger small';
-      row.append(term, meaning, remove); $('wordList').append(row);
+      actions.append(edit, remove);
+      row.append(term, meaning, actions); $('wordList').append(row);
     });
-    if (!filtered.length) $('wordList').textContent = search ? '没有匹配的单词。' : '还没有单词。';
+    if (!filtered.length) $('wordList').textContent = search ? '没有匹配的单词。' : $('missingOnly').checked ? '本单词本没有缺释义的单词。' : '还没有单词。';
     if (filtered.length > 300) { const hint = document.createElement('p'); hint.className = 'help'; hint.textContent = `共 ${filtered.length} 个匹配，仅显示前 300 个。可搜索缩小范围，导出包含全部单词。`; $('wordList').append(hint); }
   }
   on('home', 'click', e => { e.preventDefault(); library(); });
@@ -341,21 +399,34 @@
   });
   on('exportTarget', 'click', () => exportCSV(state.session.targetId));
   on('wordSearch', 'input', renderWordList);
-  on('editWord', 'click', () => {
-    const word = state.session.queue[state.session.index];
-    $('editTitle').textContent = word.word + ' · 修改释义'; $('editPhonetic').value = word.phonetic;
-    $('editPos').value = word.definitions?.length === 1 ? word.definitions[0].pos : '';
-    $('editMeaning').value = word.definitions?.length === 1 ? word.definitions[0].meaning : definitions(word);
-    $('editDialog').showModal();
+  on('missingOnly', 'change', renderWordList);
+  on('goalOpen', 'click', () => { $('goalInput').value = dailyState().target; $('goalStatus').textContent = ''; $('goalDialog').showModal(); });
+  on('goalForm', 'submit', e => {
+    e.preventDefault();
+    try {
+      const target = Number($('goalInput').value);
+      if (!Number.isInteger(target) || target < 1 || target > 10000) throw new Error('请输入 1～10000 之间的整数。');
+      commit(data => { data.daily = { ...dailyState(data), target }; });
+      $('goalDialog').close(); renderDaily();
+    } catch (error) { $('goalStatus').textContent = error.message; }
   });
+  on('editWord', 'click', () => openEditor(state.session?.queue[state.session.index], 'review'));
   on('editForm', 'submit', e => {
-    e.preventDefault(); const word = state.session.queue[state.session.index];
-    const meaning = $('editMeaning').value.trim(); if (!meaning) throw new Error('请输入中文释义。');
-    commit(data => {
-      const updated = { phonetic: $('editPhonetic').value.trim(), definitions: [{ pos: $('editPos').value.trim(), meaning, example: '' }] };
-      const update = w => { if (key(w.word) === key(word.word)) Object.assign(w, clone(updated)); };
-      data.books.forEach(b => b.words.forEach(update)); data.session.queue.forEach(update); if (data.session.last) update(data.session.last.word);
-    }); $('editDialog').close(); renderReview();
+    e.preventDefault();
+    try {
+      if (!editingWord) throw new Error('请重新选择要编辑的单词。');
+      const meaning = $('editMeaning').value.trim(); if (!meaning) throw new Error('请输入中文释义。');
+      commit(data => {
+        const updated = { phonetic: $('editPhonetic').value.trim(), definitions: [{ pos: $('editPos').value.trim(), meaning, example: '' }] };
+        const update = w => { if (key(w.word) === editingWord.key) Object.assign(w, clone(updated)); };
+        data.books.forEach(b => b.words.forEach(update));
+        if (data.session) { data.session.queue.forEach(update); if (data.session.last) update(data.session.last.word); }
+      });
+      const origin = editingWord.origin;
+      editingWord = null; $('editDialog').close();
+      if (origin === 'review') renderReview();
+      else { renderWordList(); renderSetup(); renderBooks(); }
+    } catch (error) { $('editStatus').textContent = error.message; }
   });
   document.addEventListener('keydown', guard(e => {
     if (e.repeat || e.altKey || e.ctrlKey || e.metaKey || $('review').hidden || document.querySelector('dialog[open]') || /INPUT|TEXTAREA|SELECT|BUTTON/.test(e.target.tagName)) return;
@@ -364,5 +435,13 @@
     else if (e.key === '2' && !s.revealed) { e.preventDefault(); answer(false); }
   }));
   window.addEventListener('storage', e => { if (e.key === KEY) warn('另一窗口已修改数据，请刷新后继续。'); });
+  if (persisted !== undefined) {
+    try {
+      commit(data => { fillMissingMeanings(data); data.daily = dailyState(data); });
+    } catch (error) { warn(error.message); }
+  }
+  window.addEventListener('focus', guard(refreshDay));
+  document.addEventListener('visibilitychange', guard(() => { if (!document.hidden) refreshDay(); }));
+  setInterval(guard(() => { if (state.daily?.date !== localDay()) refreshDay(); }), 1000);
   library();
 })();
