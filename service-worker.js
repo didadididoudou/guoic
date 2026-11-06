@@ -1,7 +1,7 @@
 const PREFIX = 'guoci-' + self.registration.scope + '-';
-const CACHE = PREFIX + 'v6';
+const CACHE = PREFIX + 'v7.1-textbooks';
 const ASSETS = [
-  './', './index.html', './style.css', './mobile.css', './app.js', './word-parser.js', './dictionary.js',
+  './', './index.html', './style.css', './mobile.css', './app.js', './word-parser.js', './dictionary.js', './textbooks.js',
   './manifest.webmanifest', './pwa.js', './icon-192.svg', './icon-512.svg', './icon-192.png', './icon-512.png'
 ];
 

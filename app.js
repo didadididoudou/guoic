@@ -10,6 +10,8 @@
   const dictionaryRevisions = window.GUOCI_DICTIONARY_REVISIONS || {};
   const own = (object, property) => Object.prototype.hasOwnProperty.call(object, property);
   let persisted, state, viewingBook, editingWord, busy = false, toastTimer;
+  let selectedUnits = new Set(), namingTextbook = false;
+  const textbookSeeds = window.GUOCI_TEXTBOOKS || [];
 
   function definitions(word) {
     return (word.definitions || []).map(d => [d.pos, d.meaning].filter(Boolean).join(' ')).filter(Boolean).join('\n');
@@ -49,7 +51,20 @@
     ], sourceId: 'sample', targetId: 'forgotten', shuffle: false, session: null };
   }
   function valid(data) {
-    return data && data.version === 1 && Array.isArray(data.books) && data.books.every(b => b && typeof b.id === 'string' && typeof b.name === 'string' && Array.isArray(b.words));
+    return data && data.version === 1 && Array.isArray(data.books) && data.books.length > 0 && data.books.every(b => b && typeof b.id === 'string' && typeof b.name === 'string' && Array.isArray(b.words)) &&
+      (data.textbooks === undefined || (Array.isArray(data.textbooks) && data.textbooks.every(t => t && typeof t.id === 'string' && typeof t.name === 'string' && Array.isArray(t.units) && t.units.every(u => u && typeof u.id === 'string' && typeof u.name === 'string' && Array.isArray(u.words)))));
+  }
+  function textbook(textbookId, data = state) { return (data.textbooks || []).find(t => t.id === textbookId); }
+  function currentUnit(data = state) { return textbook($('textbookSelect').value, data)?.units.find(u => u.id === $('textbookUnit').value); }
+  function installTextbooks(data) {
+    data.textbooks ||= [];
+    for (const seed of textbookSeeds) {
+      if (textbook(seed.id, data)) continue;
+      data.textbooks.push({ id: seed.id, name: seed.name, units: seed.units.map(u => ({ id: u.id, name: u.name, words: unique(u.words) })) });
+    }
+    // A hand-edited meaning already present on this device takes precedence.
+    const manual = new Map(data.books.flatMap(b => b.words).filter(w => w.meaningSource === 'manual').map(w => [key(w.word), w]));
+    data.textbooks.forEach(t => t.units.forEach(u => u.words.forEach(w => { if (manual.has(key(w.word)) && w.meaningSource !== 'manual') Object.assign(w, clone(manual.get(key(w.word)))); })));
   }
   function warn(message) { $('storageWarning').hidden = false; $('storageWarning').textContent = message; }
   function toast(message) { clearTimeout(toastTimer); $('toast').textContent = message; $('toast').hidden = false; toastTimer = setTimeout(() => { $('toast').hidden = true; }, 3600); }
@@ -111,6 +126,7 @@
       if (filled && hasMeaning(filled)) Object.assign(w, filled);
     };
     data.books.forEach(b => b.words.forEach(fill));
+    (data.textbooks || []).forEach(t => t.units.forEach(u => u.words.forEach(fill)));
     if (data.session) {
       data.session.queue.forEach(fill);
       if (data.session.last) fill(data.session.last.word);
@@ -154,6 +170,7 @@
         }
       };
       data.books.forEach(b => b.words.forEach(update));
+      (data.textbooks || []).forEach(t => t.units.forEach(u => u.words.forEach(update)));
       if (data.session) { data.session.queue.forEach(update); if (data.session.last) update(data.session.last.word); }
     });
     renderBooks(); renderSetup();
@@ -163,7 +180,7 @@
     $('bookCount').textContent = state.books.length;
     $('books').replaceChildren();
     state.books.forEach(b => {
-      const item = document.createElement('article'); item.className = 'book';
+      const item = document.createElement('article'); item.className = 'book'; item.dataset.bookId = b.id;
       const icon = document.createElement('span'); icon.className = 'book-icon'; icon.textContent = '▤';
       const title = document.createElement('h3'); title.textContent = b.name;
       const info = document.createElement('p'); const missing = b.words.filter(w => !hasMeaning(w)).length;
@@ -180,8 +197,77 @@
       if (missing) actions.append(button(`补全释义（${missing}）`, () => view(b.id, true)));
       const outdated = b.words.filter(oldDictionaryMeaning).length;
       if (outdated) actions.append(button(`更新词库释义（${outdated}）`, () => updateDictionaryMeanings(b.id)));
-      item.append(icon, title, info, actions); $('books').append(item);
+      item.append(icon, title, info, actions, dragHandle(b)); $('books').append(item);
     });
+  }
+  function reorderBook(bookId, targetId) {
+    if (bookId === targetId) return;
+    commit(data => {
+      const from = data.books.findIndex(b => b.id === bookId), to = data.books.findIndex(b => b.id === targetId);
+      if (from < 0 || to < 0) throw new Error('单词本已变更，请刷新后重试。');
+      const [moved] = data.books.splice(from, 1); data.books.splice(to, 0, moved);
+    });
+    renderBooks(); renderSetup(); toast('单词本顺序已保存。');
+  }
+  function dragHandle(b) {
+    const handle = document.createElement('button'); handle.type = 'button'; handle.className = 'drag-handle';
+    handle.setAttribute('aria-label', `长按拖动「${b.name}」排序，也可用方向键调整`);
+    handle.title = '长按拖动排序；方向键移动';
+    for (let i = 0; i < 4; i++) handle.append(document.createElement('span'));
+    handle.addEventListener('keydown', guard(e => {
+      if (!['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key)) return;
+      e.preventDefault();
+      const index = state.books.findIndex(x => x.id === b.id), step = ['ArrowUp', 'ArrowLeft'].includes(e.key) ? -1 : 1;
+      const target = state.books[index + step];
+      if (target) { reorderBook(b.id, target.id); [...$('books').children].find(x => x.dataset.bookId === b.id)?.querySelector('.drag-handle').focus(); }
+    }));
+    handle.addEventListener('contextmenu', e => e.preventDefault());
+    handle.addEventListener('pointerdown', e => {
+      if (!e.isPrimary || e.button !== 0) return;
+      e.preventDefault();
+      const origin = handle.closest('.book');
+      let active = false, ghost, targetId = b.id, frame, x = e.clientX, y = e.clientY;
+      const startX = x, startY = y, pointerId = e.pointerId;
+      handle.setPointerCapture(pointerId);
+      const clearTarget = () => $('books').querySelectorAll('.drop-target').forEach(el => el.classList.remove('drop-target'));
+      const locateTarget = () => {
+        const hit = document.elementFromPoint(x, y)?.closest('.book');
+        if (hit?.dataset.bookId && hit !== origin) { targetId = hit.dataset.bookId; clearTarget(); hit.classList.add('drop-target'); }
+        else { targetId = b.id; clearTarget(); }
+      };
+      const animate = () => {
+        if (!active) return;
+        const delta = y < 85 ? -12 : y > window.innerHeight - 85 ? 12 : 0;
+        if (delta) { window.scrollBy(0, delta); locateTarget(); }
+        frame = requestAnimationFrame(animate);
+      };
+      const timer = setTimeout(() => {
+        active = true; origin.classList.add('drag-origin');
+        ghost = document.createElement('div'); ghost.className = 'drag-ghost'; ghost.textContent = b.name;
+        document.body.append(ghost); ghost.style.left = x + 'px'; ghost.style.top = y + 'px';
+        handle.setAttribute('aria-pressed', 'true'); frame = requestAnimationFrame(animate);
+      }, 400);
+      const move = event => {
+        if (event.pointerId !== pointerId) return;
+        x = event.clientX; y = event.clientY;
+        if (!active) { if (Math.hypot(x - startX, y - startY) > 10) finish(false); return; }
+        event.preventDefault(); ghost.style.left = x + 'px'; ghost.style.top = y + 'px'; locateTarget();
+      };
+      const finish = save => {
+        clearTimeout(timer); cancelAnimationFrame(frame); ghost?.remove(); origin.classList.remove('drag-origin'); clearTarget();
+        handle.removeAttribute('aria-pressed');
+        window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up); window.removeEventListener('pointercancel', cancel);
+        window.removeEventListener('blur', cancel); window.removeEventListener('keydown', escape);
+        if (handle.hasPointerCapture(pointerId)) handle.releasePointerCapture(pointerId);
+        if (save && active && targetId !== b.id) { try { reorderBook(b.id, targetId); } catch (error) { toast(error.message); } }
+      };
+      const up = event => { if (event.pointerId === pointerId) finish(true); };
+      const cancel = () => finish(false);
+      const escape = event => { if (event.key === 'Escape') finish(false); };
+      window.addEventListener('pointermove', move, { passive: false }); window.addEventListener('pointerup', up);
+      window.addEventListener('pointercancel', cancel); window.addEventListener('blur', cancel); window.addEventListener('keydown', escape);
+    });
+    return handle;
   }
   function library() { $('review').hidden = true; $('library').hidden = false; refreshDay(); renderSetup(); renderBooks(); window.scrollTo(0, 0); }
   function setSource(sourceId) {
@@ -324,6 +410,85 @@
       return { word: row[0], pos: row.length >= 3 ? row[1] : '', meaning: row.length >= 3 ? row.slice(2).join(separator) : row[1] || '' };
     });
   }
+  function expandedRows(rows) {
+    return rows.flatMap(raw => {
+      const value = typeof raw === 'string' ? { word: raw } : raw;
+      if (!value || typeof value.word !== 'string') return [];
+      return value.word.split('/').flatMap(part => {
+        let variants = [part.trim()];
+        while (variants.some(v => /\([a-z]+\)/i.test(v))) variants = variants.flatMap(v => {
+          const m = /\(([a-z]+)\)/i.exec(v);
+          return m ? [v.replace(m[0], ''), v.replace(m[0], m[1])] : [v];
+        });
+        return variants.map(word => ({ ...value, word }));
+      });
+    });
+  }
+  function selectedTextbookWords() {
+    const source = textbook($('importTextbook').value);
+    return source ? unique(source.units.filter(u => selectedUnits.has(u.id)).flatMap(u => u.words)) : [];
+  }
+  function updateUnitSelection() {
+    $('unitSelection').textContent = `已选 ${selectedUnits.size} 个单元 · 合并去重后 ${selectedTextbookWords().length} 词`;
+  }
+  function renderUnitPicker() {
+    const source = textbook($('importTextbook').value);
+    $('unitPicker').hidden = !source; $('importUnits').replaceChildren();
+    if (source) source.units.forEach(u => {
+      const label = document.createElement('label'); label.className = 'unit-choice';
+      const input = document.createElement('input'); input.type = 'checkbox'; input.value = u.id; input.checked = selectedUnits.has(u.id);
+      const text = document.createElement('span'); text.textContent = `${u.name}（${u.words.length}）`;
+      input.addEventListener('change', () => { if (input.checked) selectedUnits.add(u.id); else selectedUnits.delete(u.id); updateUnitSelection(); });
+      label.append(input, text); $('importUnits').append(label);
+    });
+    updateUnitSelection();
+  }
+  function openImport(textbookId = '', unitIds = []) {
+    $('importBook').replaceChildren(); option($('importBook'), '', '新建单词本'); state.books.forEach(b => option($('importBook'), b.id, b.name)); $('importBook').value = '';
+    $('importTextbook').replaceChildren(); option($('importTextbook'), '', '不选单词书 / 创建空本');
+    (state.textbooks || []).forEach(t => option($('importTextbook'), t.id, `${t.name}（${t.units.length} 单元）`));
+    $('importTextbook').value = textbookId; selectedUnits = new Set(unitIds); renderUnitPicker();
+    $('importStatus').textContent = ''; $('importFile').value = ''; $('importText').value = '';
+    $('bookName').value = textbookId ? textbook(textbookId).name : ''; $('nameLabel').hidden = false; $('importDialog').showModal();
+  }
+  function renderTextbookUnits(unitId = '') {
+    const source = textbook($('textbookSelect').value);
+    $('textbookUnit').replaceChildren(); option($('textbookUnit'), '', '全部单元 · 独立词库');
+    source?.units.forEach(u => option($('textbookUnit'), u.id, `${u.name}（${u.words.length}）`));
+    $('textbookUnit').value = source?.units.some(u => u.id === unitId) ? unitId : '';
+    $('textbookSearch').value = ''; renderTextbookWords();
+  }
+  function openTextbooks(textbookId = '', unitId = '') {
+    $('textbookSelect').replaceChildren();
+    (state.textbooks || []).forEach(t => option($('textbookSelect'), t.id, t.name));
+    $('textbookSelect').value = textbook(textbookId)?.id || state.textbooks?.[0]?.id || '';
+    renderTextbookUnits(unitId); $('textbookDialog').showModal();
+  }
+  function renderTextbookWords(resetEditor = true) {
+    const source = textbook($('textbookSelect').value), unit = currentUnit();
+    const words = unit ? unit.words : unique(source?.units.flatMap(u => u.words) || []), search = key($('textbookSearch').value);
+    const filtered = words.filter(w => key(w.word + ' ' + definitions(w)).includes(search));
+    $('textbookCount').textContent = `${unit?.name || '整书词库'} · 显示 ${filtered.length} / ${words.length} 词 · ${words.filter(w => !hasMeaning(w)).length} 个缺释义`;
+    $('textbookWords').replaceChildren();
+    filtered.slice(0, 300).forEach(w => {
+      const row = document.createElement('div'); row.className = 'word-row';
+      const term = document.createElement('strong'); term.textContent = w.word;
+      const meaning = document.createElement('span'); meaning.textContent = definitions(w) || '暂无释义';
+      const edit = button('编辑释义', () => openEditor(w, 'textbook')); edit.className = 'small';
+      row.append(term, meaning, edit); $('textbookWords').append(row);
+    });
+    if (!filtered.length) $('textbookWords').textContent = search ? '没有匹配的单词。' : '本单元暂无单词，可在下方编辑词表。';
+    if (filtered.length > 300) { const hint = document.createElement('p'); hint.className = 'help'; hint.textContent = '当前显示前 300 词；可搜索或选择单元查看其余词，导出包含完整词库。'; $('textbookWords').append(hint); }
+    $('unitEditDetails').hidden = !unit;
+    if (resetEditor) {
+      $('unitEditDetails').open = false;
+      $('unitName').value = unit?.name || ''; $('unitWords').value = unit?.words.map(w => w.word).join('\n') || ''; $('unitStatus').textContent = '';
+    }
+  }
+  function exportTextbook() {
+    const source = textbook($('textbookSelect').value); if (!source) throw new Error('请选择单词书。');
+    download(source.name + '-单独词库.json', JSON.stringify({ version: 1, name: source.name, words: unique(source.units.flatMap(u => u.words)), units: source.units }, null, 2), 'application/json');
+  }
   function view(bookId, missingOnly = false) { viewingBook = bookId; $('viewTitle').textContent = book(bookId).name; $('wordSearch').value = ''; $('missingOnly').checked = missingOnly; renderWordList(); $('bookDialog').showModal(); }
   function openEditor(word, origin) {
     if (!word) throw new Error('单词不存在。');
@@ -393,7 +558,64 @@
   on('newTarget', 'click', () => $('nameDialog').showModal());
   on('nameForm', 'submit', e => { e.preventDefault(); const name = $('targetName').value.trim(); if (!name) throw new Error('请输入名称。'); commit(data => { const newId = id(); data.books.push({ id: newId, name, words: [] }); data.targetId = newId; }); $('nameDialog').close(); renderSetup(); renderBooks(); });
   document.querySelectorAll('[data-close]').forEach(el => el.addEventListener('click', () => $(el.dataset.close).close()));
-  on('importOpen', 'click', () => { $('importBook').replaceChildren(); option($('importBook'), '', '新建单词本'); state.books.forEach(b => option($('importBook'), b.id, b.name)); $('importStatus').textContent = ''; $('importFile').value = ''; $('importText').value = ''; $('bookName').value = ''; $('nameLabel').hidden = false; $('importDialog').showModal(); });
+  on('importOpen', 'click', () => openImport());
+  on('importTextbook', 'change', () => { selectedUnits = new Set(); renderUnitPicker(); });
+  on('unitsAll', 'click', () => { selectedUnits = new Set(textbook($('importTextbook').value)?.units.map(u => u.id) || []); renderUnitPicker(); });
+  on('unitsNone', 'click', () => { selectedUnits.clear(); renderUnitPicker(); });
+  on('textbooksOpen', 'click', () => openTextbooks());
+  on('textbookSelect', 'change', () => renderTextbookUnits());
+  on('textbookUnit', 'change', renderTextbookWords);
+  on('textbookSearch', 'input', () => renderTextbookWords(false));
+  on('useTextbook', 'click', () => {
+    const source = textbook($('textbookSelect').value); if (!source) throw new Error('请先创建单词书。');
+    const unit = currentUnit(); $('textbookDialog').close(); openImport(source.id, unit ? [unit.id] : source.units.map(u => u.id));
+  });
+  const exportTextbookButton = button('导出整书词库', exportTextbook); exportTextbookButton.className = 'small';
+  $('useTextbook').parentElement.append(exportTextbookButton);
+  const openTextbookName = isTextbook => {
+    if (!isTextbook && !textbook($('textbookSelect').value)) throw new Error('请先创建单词书。');
+    namingTextbook = isTextbook; $('textbookNameTitle').textContent = isTextbook ? '新建单词书' : '新建单元';
+    $('textbookNameInput').value = ''; $('textbookNameStatus').textContent = ''; $('textbookNameDialog').showModal();
+  };
+  on('newTextbook', 'click', () => openTextbookName(true));
+  on('newUnit', 'click', () => openTextbookName(false));
+  on('textbookNameForm', 'submit', e => {
+    e.preventDefault();
+    try {
+      const name = $('textbookNameInput').value.trim(); if (!name) throw new Error('请输入名称。');
+      const newId = id(), selected = $('textbookSelect').value;
+      commit(data => {
+        if (namingTextbook) data.textbooks.push({ id: newId, name, units: [] });
+        else { const target = textbook(selected, data); if (!target) throw new Error('单词书不存在。'); target.units.push({ id: newId, name, words: [] }); }
+      });
+      $('textbookNameDialog').close(); openTextbooks(namingTextbook ? newId : selected, namingTextbook ? '' : newId);
+      if (!namingTextbook) $('unitEditDetails').open = true;
+    } catch (error) { $('textbookNameStatus').textContent = error.message; }
+  });
+  on('unitForm', 'submit', e => {
+    e.preventDefault();
+    try {
+      const unit = currentUnit(), name = $('unitName').value.trim();
+      if (!unit || !name) throw new Error('请选择单元并填写名称。');
+      const text = $('unitWords').value.trim(), raw = expandedRows(parse(text)), words = unique(raw);
+      if (text && !words.length) throw new Error('没有识别到有效英文单词，原词表已保留。');
+      // Refuse invalid spellings rather than silently removing old content during editing.
+      if (raw.some(w => !normalize(w))) throw new Error('词表中有无效单词，请检查后保存。');
+      const removed = unit.words.filter(w => !words.some(n => key(n.word) === key(w.word))).length;
+      if (removed && !confirm(`保存会从此单元移除 ${removed} 个词，已有单词本不受影响。继续吗？`)) return;
+      const preserved = new Map(unit.words.map(w => [key(w.word), w]));
+      const supplied = new Map(raw.map(w => [key(w.word), w]));
+      const explicitlyDefined = raw => raw && (Array.isArray(raw.definitions) ? hasMeaning(raw) : String(raw.meaning || raw.translation || '').trim());
+      commit(data => {
+        const target = currentUnit(data); target.name = name;
+        target.words = words.map(w => {
+          if (explicitlyDefined(supplied.get(key(w.word)))) return { ...w, meaningSource: 'manual' };
+          return preserved.has(key(w.word)) ? clone(preserved.get(key(w.word))) : w;
+        });
+      });
+      const sourceId = $('textbookSelect').value; renderTextbookUnits(unit.id); $('textbookSelect').value = sourceId; toast('单元词表已保存。');
+    } catch (error) { $('unitStatus').textContent = error.message; }
+  });
   on('importBook', 'change', () => { $('nameLabel').hidden = !!$('importBook').value; });
   on('importFile', 'change', () => { const file = $('importFile').files[0]; if (file && !$('bookName').value) $('bookName').value = file.name.replace(/\.[^.]+$/, ''); $('importStatus').textContent = file ? '将导入所选文件；若下方也有粘贴内容，会一同导入并去重。' : ''; });
   on('importForm', 'submit', async e => {
@@ -403,16 +625,23 @@
       const file = $('importFile').files[0];
       if (file) { if (file.size > 20 * 1024 * 1024) throw new Error('单文件请控制在 20 MB 内。'); raw.push(...parse(await file.text(), file.name)); }
       raw.push(...parse($('importText').value));
-      const words = unique(raw); if (!words.length) throw new Error('没有识别到有效英文单词，请检查格式。');
+      const hasTypedInput = !!file || !!$('importText').value.trim();
+      if (hasTypedInput && !unique(expandedRows(raw)).length) throw new Error('没有识别到有效英文单词，请检查格式。');
+      const picked = selectedTextbookWords();
+      if ($('importTextbook').value && !selectedUnits.size) throw new Error('请至少选择一个单元，或选择「不选单词书 / 创建空本」。');
+      const words = unique([...expandedRows(raw), ...picked]);
       let importedId = $('importBook').value; let added = 0;
-      const name = $('bookName').value.trim() || '导入的单词';
+      const name = $('bookName').value.trim() || (words.length ? '导入的单词' : '');
+      if (!importedId && !name) throw new Error('请输入新单词本名称。');
+      if (importedId && !words.length) throw new Error('没有要导入的单词。要创建空本，请选择「新建单词本」。');
       commit(data => {
         if (!importedId) { importedId = id(); data.books.push({ id: importedId, name, words: [] }); }
-        const target = book(importedId, data), map = new Map(target.words.map(w => [key(w.word), w]));
-        for (const word of words) { const old = map.get(key(word.word)); if (old) { if (hasMeaning(word) || !hasMeaning(old)) Object.assign(old, word); } else { target.words.push(word); map.set(key(word.word), word); added++; } }
+        const target = book(importedId, data); if (!target) throw new Error('导入目标不存在，请重新选择。');
+        const map = new Map(target.words.map(w => [key(w.word), w]));
+        for (const word of words) { const old = map.get(key(word.word)); if (old) { if (old.meaningSource !== 'manual' && (hasMeaning(word) || !hasMeaning(old))) Object.assign(old, word); } else { target.words.push(word); map.set(key(word.word), word); added++; } }
         data.sourceId = importedId; if (data.targetId === importedId) data.targetId = data.books.find(b => b.id !== importedId)?.id || '';
       });
-      $('importDialog').close(); library(); toast(`识别 ${words.length} 词，新增 ${added} 词，更新 ${words.length - added} 词；忽略无效或重复行 ${raw.length - words.length}。`);
+      $('importDialog').close(); library(); toast(words.length ? `合并去重后 ${words.length} 词，新增 ${added} 词；已有手动释义已保留。` : `已创建空单词本「${name}」，可选作遗忘词接收本。`);
     } catch (error) { $('importStatus').textContent = error.message; } finally { busy = false; $('importSubmit').disabled = false; }
   });
   on('backup', 'click', () => download('过词-完整备份-' + new Date().toISOString().slice(0, 10) + '.json', JSON.stringify(state, null, 2), 'application/json'));
@@ -422,8 +651,11 @@
       if (file.size > 20 * 1024 * 1024) throw new Error('备份请控制在 20 MB 内。');
       const imported = JSON.parse(await file.text()); if (!valid(imported)) throw new Error('不是兼容的过词备份文件。');
       // 非破坏性恢复：生成新 ID 并保留现有单词本，不载入不可信的会话状态。
-      commit(data => { imported.books.forEach(b => data.books.push({ id: id(), name: b.name.slice(0, 80) + '（恢复）', words: unique(b.words) })); });
-      library(); toast(`已恢复 ${imported.books.length} 本单词本；现有数据已保留。`);
+      commit(data => {
+        imported.books.forEach(b => data.books.push({ id: id(), name: b.name.slice(0, 80) + '（恢复）', words: unique(b.words) }));
+        (imported.textbooks || []).forEach(t => data.textbooks.push({ id: id(), name: t.name.slice(0, 80) + '（恢复）', units: t.units.map(u => ({ id: id(), name: u.name.slice(0, 80), words: unique(u.words) })) }));
+      });
+      library(); toast(`已恢复 ${imported.books.length} 本单词本、${imported.textbooks?.length || 0} 本单词书；现有数据已保留。`);
     } finally { input.value = ''; }
   });
   on('exportTarget', 'click', () => exportCSV(state.session.targetId));
@@ -449,12 +681,15 @@
         const updated = { phonetic: $('editPhonetic').value.trim(), definitions: [{ pos: $('editPos').value.trim(), meaning, example: '' }], meaningSource: 'manual' };
         const update = w => { if (key(w.word) === editingWord.key) Object.assign(w, clone(updated)); };
         data.books.forEach(b => b.words.forEach(update));
+        (data.textbooks || []).forEach(t => t.units.forEach(u => u.words.forEach(update)));
         if (data.session) { data.session.queue.forEach(update); if (data.session.last) update(data.session.last.word); }
       });
       const origin = editingWord.origin;
       editingWord = null; $('editDialog').close();
-      if (origin === 'review') renderReview();
-      else { renderWordList(); renderSetup(); renderBooks(); }
+      renderSetup(); renderBooks();
+      if (origin === 'textbook') renderTextbookWords();
+      else if (origin === 'library') renderWordList();
+      if (!$('review').hidden || origin === 'review') renderReview();
     } catch (error) { $('editStatus').textContent = error.message; }
   });
   document.addEventListener('keydown', guard(e => {
@@ -466,7 +701,7 @@
   window.addEventListener('storage', e => { if (e.key === KEY) warn('另一窗口已修改数据，请刷新后继续。'); });
   if (persisted !== undefined) {
     try {
-      commit(data => { fillMissingMeanings(data); data.daily = dailyState(data); });
+      commit(data => { installTextbooks(data); fillMissingMeanings(data); data.daily = dailyState(data); });
     } catch (error) { warn(error.message); }
   }
   window.addEventListener('focus', guard(refreshDay));
